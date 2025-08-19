@@ -1,4 +1,4 @@
-// server.js - Complete Backend for Swipe Leaderboard
+// server.js - Improved Backend with Profile Pictures & Better Ranking
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -10,14 +10,14 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json({ limit: '1mb' }));
 
-// MongoDB connection - will be set as environment variable in Render
+// MongoDB connection
 const MONGODB_URI = process.env.MONGODB_URI || 'your_connection_string_here';
 
 mongoose.connect(MONGODB_URI)
 .then(() => console.log('✅ Connected to MongoDB Atlas'))
 .catch(err => console.error('❌ MongoDB connection failed:', err));
 
-// Player Schema
+// Player Schema with Profile Picture Support
 const PlayerSchema = new mongoose.Schema({
   username: {
     type: String,
@@ -31,6 +31,10 @@ const PlayerSchema = new mongoose.Schema({
     required: true,
     min: 1,
     max: 1000
+  },
+  profilePicture: {
+    type: String,
+    default: null
   },
   gamesPlayed: {
     type: Number,
@@ -51,7 +55,7 @@ const Player = mongoose.model('Player', PlayerSchema);
 
 // Routes
 
-// Home endpoint - shows API is working
+// Home endpoint
 app.get('/', (req, res) => {
   res.json({ 
     message: 'Swipe Leaderboard API is running!',
@@ -75,7 +79,7 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Get top 20 players
+// Get top 20 players with profile pictures
 app.get('/api/leaderboard', async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit) || 20, 50);
@@ -83,7 +87,7 @@ app.get('/api/leaderboard', async (req, res) => {
     const players = await Player.find()
       .sort({ level: -1, lastUpdated: 1 })
       .limit(limit)
-      .select('username level gamesPlayed lastUpdated');
+      .select('username level profilePicture gamesPlayed lastUpdated');
 
     const leaderboard = players.map((player, index) => ({
       rank: index + 1,
@@ -91,7 +95,7 @@ app.get('/api/leaderboard', async (req, res) => {
       level: player.level,
       gamesPlayed: player.gamesPlayed || 1,
       lastUpdated: player.lastUpdated,
-      avatar: `https://images.unsplash.com/photo-1494790108755-2616b612b1c5?w=150&h=150&fit=crop&crop=face`
+      avatar: player.profilePicture || `https://images.unsplash.com/photo-1494790108755-2616b612b1c5?w=150&h=150&fit=crop&crop=face`
     }));
 
     console.log(`📊 Leaderboard requested - returning ${leaderboard.length} players`);
@@ -112,10 +116,10 @@ app.get('/api/leaderboard', async (req, res) => {
   }
 });
 
-// Update player score
+// Update player score with proper ranking system
 app.post('/api/leaderboard/update', async (req, res) => {
   try {
-    const { username, level } = req.body;
+    const { username, level, profilePicture } = req.body;
 
     // Validation
     if (!username || !level) {
@@ -145,40 +149,52 @@ app.post('/api/leaderboard/update', async (req, res) => {
           { username: cleanUsername },
           { 
             level: level,
+            profilePicture: profilePicture || existingPlayer.profilePicture,
             gamesPlayed: (existingPlayer.gamesPlayed || 0) + 1,
             lastUpdated: new Date()
           }
         );
 
-        // Get new rank
+        // Calculate new rank by counting players with higher levels
         const playersAbove = await Player.countDocuments({ 
           level: { $gt: level } 
         });
         const newRank = playersAbove + 1;
 
-        console.log(`🏆 NEW RECORD: ${cleanUsername} reached level ${level} (rank #${newRank})`);
+        // Check if player is in top 20
+        const isInTop20 = newRank <= 20;
+
+        console.log(`🏆 RECORD UPDATE: ${cleanUsername} reached level ${level} (rank #${newRank}) ${isInTop20 ? '- IN TOP 20!' : ''}`);
         
         res.json({
           success: true,
           newRecord: true,
-          message: 'New personal best!',
+          message: isInTop20 ? 'New record in top 20!' : 'New personal best!',
           data: {
             username: cleanUsername,
             level: level,
             previousBest: existingPlayer.level,
             newRank: newRank,
+            isInTop20: isInTop20,
             gamesPlayed: (existingPlayer.gamesPlayed || 0) + 1
           }
         });
       } else {
-        // Update games played but not level
+        // Update games played and profile picture but not level
         await Player.updateOne(
           { username: cleanUsername },
           { 
+            profilePicture: profilePicture || existingPlayer.profilePicture,
             gamesPlayed: (existingPlayer.gamesPlayed || 0) + 1,
             lastUpdated: new Date()
           }
         );
+        
+        // Get current rank
+        const playersAbove = await Player.countDocuments({ 
+          level: { $gt: existingPlayer.level } 
+        });
+        const currentRank = playersAbove + 1;
         
         res.json({
           success: true,
@@ -188,6 +204,8 @@ app.post('/api/leaderboard/update', async (req, res) => {
             username: cleanUsername,
             currentBest: existingPlayer.level,
             submittedLevel: level,
+            currentRank: currentRank,
+            isInTop20: currentRank <= 20,
             gamesPlayed: (existingPlayer.gamesPlayed || 0) + 1
           }
         });
@@ -197,26 +215,29 @@ app.post('/api/leaderboard/update', async (req, res) => {
       await Player.create({
         username: cleanUsername,
         level: level,
+        profilePicture: profilePicture,
         gamesPlayed: 1,
         lastUpdated: new Date()
       });
 
-      // Get rank
+      // Calculate rank for new player
       const playersAbove = await Player.countDocuments({ 
         level: { $gt: level } 
       });
       const rank = playersAbove + 1;
+      const isInTop20 = rank <= 20;
 
-      console.log(`🎯 NEW PLAYER: ${cleanUsername} joined at level ${level} (rank #${rank})`);
+      console.log(`🎯 NEW PLAYER: ${cleanUsername} joined at level ${level} (rank #${rank}) ${isInTop20 ? '- IN TOP 20!' : ''}`);
       
       res.json({
         success: true,
         newRecord: true,
-        message: 'Welcome to the leaderboard!',
+        message: isInTop20 ? 'Welcome to top 20!' : 'Welcome to the leaderboard!',
         data: {
           username: cleanUsername,
           level: level,
           rank: rank,
+          isInTop20: isInTop20,
           gamesPlayed: 1
         }
       });
@@ -252,6 +273,8 @@ app.get('/api/player/:username', async (req, res) => {
           username: player.username,
           level: player.level,
           rank: rank,
+          isInTop20: rank <= 20,
+          profilePicture: player.profilePicture,
           gamesPlayed: player.gamesPlayed || 1,
           joinedAt: player.createdAt,
           lastPlayed: player.lastUpdated
@@ -264,6 +287,8 @@ app.get('/api/player/:username', async (req, res) => {
           username: cleanUsername,
           level: 0,
           rank: null,
+          isInTop20: false,
+          profilePicture: null,
           gamesPlayed: 0,
           message: 'Player not found'
         }
@@ -281,12 +306,13 @@ app.get('/api/player/:username', async (req, res) => {
 // Get leaderboard statistics
 app.get('/api/stats', async (req, res) => {
   try {
-    const [totalPlayers, topPlayer, avgLevelResult] = await Promise.all([
+    const [totalPlayers, topPlayer, avgLevelResult, top20Count] = await Promise.all([
       Player.countDocuments(),
       Player.findOne().sort({ level: -1 }),
       Player.aggregate([
         { $group: { _id: null, avgLevel: { $avg: '$level' } } }
-      ])
+      ]),
+      Player.countDocuments({ level: { $gte: 1 } }) // Just for stats
     ]);
 
     res.json({
@@ -295,7 +321,8 @@ app.get('/api/stats', async (req, res) => {
         totalPlayers,
         highestLevel: topPlayer ? topPlayer.level : 0,
         topPlayer: topPlayer ? topPlayer.username : null,
-        averageLevel: avgLevelResult[0] ? Math.round(avgLevelResult[0].avgLevel * 10) / 10 : 0
+        averageLevel: avgLevelResult[0] ? Math.round(avgLevelResult[0].avgLevel * 10) / 10 : 0,
+        competitorsInTop20: Math.min(totalPlayers, 20)
       }
     });
   } catch (error) {
